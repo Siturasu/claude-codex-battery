@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 // <xbar.title>Claude & Codex Usage</xbar.title>
-// <xbar.version>v3.0</xbar.version>
+// <xbar.version>v1.4.0</xbar.version>
 // <xbar.author>개발부스러기</xbar.author>
 // <xbar.desc>Claude Code 5시간 블록 + Codex rate limit을 메뉴바에 배터리 아이콘으로 상시 표시</xbar.desc>
-// SwiftBar 플러그인: 1분마다 갱신. 메뉴바=배터리 잔량 아이콘(자체 PNG), 클릭=상세 게이지.
+// SwiftBar 플러그인: 2분마다 갱신. 메뉴바=배터리 잔량 아이콘(자체 PNG), 클릭=상세 게이지.
 
 import { execSync, spawn } from "node:child_process";
 import {
@@ -46,10 +46,10 @@ const CODEX_SESSIONS = `${HOME}/.codex/sessions`;
 const now = Math.floor(Date.now() / 1000);
 
 // ── 자동 업데이트 (알림 + 원클릭) ──
-const VERSION = "1.3.1";
+const VERSION = "1.4.0";
 const SELF_DIR = dirname(process.argv[1] || `${HOME}/.swiftbar-plugins/x`);
 const REPO_RAW =
-  "https://raw.githubusercontent.com/dennykim123/claude-codex-battery/main";
+  "https://raw.githubusercontent.com/Siturasu/claude-codex-battery/main";
 const UPDATE_CACHE = `${HOME}/.claude/swiftbar/.update-check.json`;
 function cmpVer(a, b) {
   const pa = String(a).split(".").map(Number);
@@ -168,6 +168,50 @@ try {
   if (readFileSync(SIZE_FILE, "utf8").trim() === "small") SIZE = "small";
 } catch {}
 
+// ── 메뉴바 표시 항목 커스텀 (서비스별) ──────────────────────
+// 값: "5h"(기본) | "week"(주간) | "both"(둘 다) | "worst"(더 급한 쪽 하나)
+const SWDIR = `${HOME}/.claude/swiftbar`;
+const CLAUDE_SHOW_FILE = `${SWDIR}/.batt-claude`;
+const CODEX_SHOW_FILE = `${SWDIR}/.batt-codex`;
+const VALID_SHOW = ["5h", "week", "both", "worst"];
+function readShow(file) {
+  try {
+    const v = readFileSync(file, "utf8").trim();
+    if (VALID_SHOW.includes(v)) return v;
+  } catch {}
+  return "5h"; // 기본값: 5시간
+}
+const CLAUDE_SHOW = readShow(CLAUDE_SHOW_FILE);
+const CODEX_SHOW = readShow(CODEX_SHOW_FILE);
+// 모드에 따라 표시할 캡슐 배열 생성. five/week/fable = {has, remain}(remain은 잔량%, null 허용)
+function pickItems(prefix, five, week, fable) {
+  const out = [];
+  const mode = prefix === "C" ? CLAUDE_SHOW : CODEX_SHOW;
+  const add = (tag, r) => out.push({ label: prefix + tag, remain: r });
+  if (mode === "both") {
+    if (five.has) add("5", five.remain);
+    if (week.has) add("W", week.remain);
+    if (fable && fable.has) add("F", fable.remain);
+  } else if (mode === "week") {
+    if (week.has) add("W", week.remain);
+    else if (five.has) add("5", five.remain); // 주간 없으면 5h 폴백
+  } else if (mode === "worst") {
+    const cand = [];
+    if (five.has) cand.push(["5", five.remain]);
+    if (week.has) cand.push(["W", week.remain]);
+    if (fable && fable.has) cand.push(["F", fable.remain]);
+    if (cand.length) {
+      cand.sort((a, b) => (a[1] ?? 101) - (b[1] ?? 101)); // 잔량 적은 순
+      add(cand[0][0], cand[0][1]);
+    }
+  } else {
+    // "5h" 기본
+    if (five.has) add("5", five.remain);
+    else if (week.has) add("W", week.remain); // 5h 없으면 주간 폴백
+  }
+  return out;
+}
+
 // 4x6 픽셀 폰트 (big 프리셋)
 const FONT46 = {
   0: ["0110", "1001", "1001", "1001", "1001", "0110"],
@@ -251,42 +295,226 @@ function drawCapsule(cv, x, midY, remain, ink, dark) {
   return x + bw + 2;
 }
 // 캡슐 N개(items=[{label,remain}]). 그룹(C=Claude / X=Codex) 앞에 라벨 문자.
+// SLIM 스타일: 그룹 라벨(C/X) + 잔량 숫자(신호색) + 아래 얇은 밑줄 게이지. 배터리 캡슐 없음.
+// ── 예쁜 폰트 글리프 아틀라스 (JetBrains Mono Bold, 안티에일리싱) ──
+// 각 글리프 = alpha 바이트(GW×GH), base64. 순수 백엔드로 신호색을 입혀 device 해상도로 블릿.
+const GLYPH_SETS = {big:{GW:15,GH:18,g:{"0":"AAAAAFe25vnmtlcAAAAAAAAGtP////////+yBQAAAACP////4sHi////iwAAAA31//9wAQABc///9AwAADb//9AAAAAAANH//zQAAEv//6oAAAAAAKr//0sAAEz//6gAAAAAAKj//0wAAEz//6gAb69vAKj//0wAAEz//6ga////Gqj//0wAAEz//6gDtPe0A6j//0wAAEz//6gAAAAAAKj//0wAAEz//6gAAAAAAKj//0wAAEv//6oAAAAAAKr//0sAADb//9EAAAAAANL//zQAAA31//9zAQABdv//9AwAAACP////4sHj////jAAAAAAGtf////////+0BgAAAAAAAVu55/rnuVsAAAAA","1":"AAAAAABo+P//+AAAAAAAAAAADaf/////+AAAAAAAAAAu2f//////+AAAAAAAAADn///2jv//+AAAAAAAAADs/9AqKP//+AAAAAAAAADqjQYAKP//+AAAAAAAAAA4AAAAKP//+AAAAAAAAAAAAAAAKP//+AAAAAAAAAAAAAAAKP//+AAAAAAAAAAAAAAAKP//+AAAAAAAAAAAAAAAKP//+AAAAAAAAAAAAAAAKP//+AAAAAAAAAAAAAAAKP//+AAAAAAAAAAAAAAAKP//+AAAAAAAAAAAAAAAKP//+AAAAAAAAADA1NTU2v///tTU1KgAAADo/////////////8wAAADo/////////////8wA","2":"AAAAAE+z5fnlsE0AAAAAAAAEqP////////+fAQAAAACL////48Pt////cwAAABL3//+FAgAMtv//5QMAAE3//+MCAAAAJP///x8AADOEhGIAAAAAAv7//y4AAAAAAAAAAAAALP///Q8AAAAAAAAAAAAAov//vQAAAAAAAAAAAABl////PwAAAAAAAAAAAF79//+QAAAAAAAAAAAAX/3//6kCAAAAAAAAAABg/f//qQQAAAAAAAAAAGD9//+jAwAAAAAAAAAAYf3//5wCAAAAAAAAAABh/f//lQEAAAAAAAAAAB/9///6uLi4uLi4uFMAACj//////////////3QAACj//////////////3QA","3":"AADg////////////rAAAAADg////////////rAAAAAChuLi4uLi4+P//mAAAAAAAAAAAAAKV//+xCAAAAAAAAAAABaf//6EEAAAAAAAAAAAKtv//jwEAAAAAAAAAAADA///XQAIAAAAAAAAAAAD0/////9xAAAAAAAAAAAD0///////6OwAAAAAAAAAAAAg70///ywAAAAAAAAAAAAAALv///xYAAAAAAAAAAAAAAfj//zAAABcsLBwAAAAAAPT//zMAAHn//78AAAAAFP///yUAAEb///5WAAAIo///7wQAAAPS////2cHr////hAAAAAAk3/////////+rBQAAAAAADnnK8vvptVMAAAAA","4":"AAAAAAAAACj3//9eAAAAAAAAAAAABMr//7MAAAAAAAAAAAAAfv//7xoAAAAAAAAAAAAy+v//XgAAAAAAAAAAAAfV//+0AAAAAAAAAAAAAIz//+8aAAAAAAAAAAAAPf3//18AAAAAAAAAAAAM3f//tAAAdP//tAAAAACa///vGgAAdP//tAAAAEf///9fAAAAdP//tAAAAIj//7YAAAAAdP//tAAAAIj//3gAAAAAdP//tAAAAIj/////////////tAAAAIj/////////////tAAAAGbAwMDAwMDA3f//tAAAAAAAAAAAAAAAdP//tAAAAAAAAAAAAAAAdP//tAAAAAAAAAAAAAAAdP//tAAA","5":"AADU////////////lAAAAADU////////////lAAAAADU///BuLi4uLi4agAAAADU//8hAAAAAAAAAAAAAADU//8jAAAAAAAAAAAAAADU//8mAAAAAAAAAAAAAADU///DuLameyUAAAAAAADU//////////2DAAAAAADU////////////agAAAAAAAAAAAAUyxv//5wEAAAAAAAAAAAAAG////yYAAAAAAAAAAAAAAOb//zwAABc0NCMAAAAAAOH//z8AAGT//84AAAAACPv//y8AADH///9oAAAElP//9AcAAADA////3sHm////iwAAAAAZ1f////////+0BgAAAAAACXDF8PvruVoBAAAA","6":"AAAAAAAASP///z4AAAAAAAAAAAAD1f//ogAAAAAAAAAAAABq///vFgAAAAAAAAAAAA/r//9qAAAAAAAAAAAAAIz//8sCAAAAAAAAAAAAI/n//TQAAAAAAAAAAAAArv//li5UQA0AAAAAAAA4///5xP////J7AQAAAAC3////////////iAAAACH+//+0LwsvtP///SMAAG3//9MFAAAABdP//3cAAJ3//4IAAAAAAIT//5sAAKD//3cAAAAAAHf//6AAAIL//7MAAAAAALP//4IAADT///9uAQABbv///zMAAACx////5MLk////sAAAAAAQv/////////+/DwAAAAAAAl255vnmuV0CAAAA","7":"AFT///////////////8AAFT///////////////8AAFT///G4uLi4uNf///sAAFT//8wAAAAAALj//6gAAFT//8wAAAAAKP7//zkAADWkpIIAAAAAl///ygAAAAAAAAAAAAAR9f//WwAAAAAAAAAAAAB3///mBQAAAAAAAAAAAATi//99AAAAAAAAAAAAAFb///gWAAAAAAAAAAAAAMb//58AAAAAAAAAAAAANf///zEAAAAAAAAAAAAApv//wQAAAAAAAAAAAAAa+v//UgAAAAAAAAAAAACF///gAwAAAAAAAAAAAAjr//90AAAAAAAAAAAAAGX///QRAAAAAAAAAAAAANP//5cAAAAAAAAA","8":"AAAAAVy46ProuFwBAAAAAAAJvP////////+/CgAAAACV////4sHj////mQAAAAX4//9+AgACgP//+gcAAB7///IBAAAAAvL//yIAAAX6//kNAAAADfr/+wcAAACT//+5LQgtu///lAAAAAAHnPv///////ucBwAAAAAAPL3//////708AAAAAABn/f//4sLj///9ZAAAACD5//1gAAAAYP3/+B8AAH3//50AAAAAAJ3//3wAAKH//2wAAAAAAGz//6AAAJH//5gAAAAAAJn//48AAFP///xZAAAAWfz//1EAAAPO////4cHh////ywIAAAAazv/////////NGQAAAAAABGW85/rnu2MEAAAA","9":"AAAAA2G65vnkt1oBAAAAAAAWyf////////+9DgAAAAHD////4cLh////rQAAAEX///1dAAAAXf3//zEAAIr//58AAAAAAKD//4AAAKT//3MAAAAAAHT//58AAJH//6AAAAAAAKD//5sAAFT///1aAAAAWv3//2oAAAXW////4MHg/////R4AAAAn4f//////////tQAAAAAAEYTX9+zW////OAAAAAAAAAAAAA3o//+tAAAAAAAAAAAAAIf///kjAAAAAAAAAAAAHvf//4sAAAAAAAAAAAAAp///6w8AAAAAAAAAAAA4////aQAAAAAAAAAAAADG///VAwAAAAAAAAAAAFj///9IAAAAAAAA","C":"AAAAAEGn4fjrxW8GAAAAAAAAjf/////////TFwAAAABg////7MLY////vgAAAADS//+sCQAAVv///zQAAAX9//8nAAAAAMf//2kAABf///8JAAAAACU4OBsAABj///8IAAAAAAAAAAAAABj///8IAAAAAAAAAAAAABj///8IAAAAAAAAAAAAABj///8IAAAAAAAAAAAAABj///8IAAAAAAAAAAAAABj///8IAAAAAAAAAAAAABf///8JAAAAACtAQB8AAAX9//8nAAAAAMj//2gAAADS//+pCAAAVv///zMAAABi////68LX////vgAAAAAAkf/////////TFwAAAAAAAEWq4/nsxW8HAAAA","X":"ALv//8AAAAAAAKr//7kAADL+//9CAAAALf7//jAAAACn///DAAAAr///owAAAAAi+v//RgAy///4HwAAAAAAkv//xgCz//+MAAAAAAAAFfL//2z//+8RAAAAAAAAAH7///z//3UAAAAAAAAAAAvo////4QgAAAAAAAAAAABv////aQAAAAAAAAAAAACj////rAAAAAAAAAAAADH+/////zgAAAAAAAAAALv//9D//8IAAAAAAAAASP//6R31//9NAAAAAAAC0v//dACK///VAwAAAABh///lCQAT8f//ZAAAAAnj//9nAAAAgP//5QoAAHr//9wEAAAADu3//3oAFPH//1sAAAAAAHb///EU","-":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAXLi4uLi4uLhcAAAAAAAAgP////////+AAAAAAAAAgP////////+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}},small:{GW:11,GH:13,g:{"0":"AAAeoef53ooMAAAAG+j///7//8kFAACM/9gsA0Lz/1gAAL7/aAAAAJz/igAAyP9YAAAAjP+UAADI/1iE5FuM/5QAAMj/WI32X4z/lAAAyP9YAAAAjP+UAADI/1gAAACM/5QAAL7/aAAAAJz/igAAjf/YKwNC8/9ZAAAc6f///v//ywYAAAAfouf534sNAAA=","1":"AAAAQeb//zAAAAAAAn79////MAAAAAB1//6d//8wAAAAAIDpSRD//zAAAAAARRcAEP//MAAAAAAAAAAQ//8wAAAAAAAAABD//zAAAAAAAAAAEP//MAAAAAAAAAAQ//8wAAAAAAAAABD//zAAAAAAAwgIF///NggHAAB8//////////AAAHz/////////8AA=","2":"AAAZneb424EIAAAAGeX///7//7sBAACS/+QwBmv//0cAAMn8eAAAANr/eQAAAAAAAAAA4f9sAAAAAAAAAFH//SEAAAAAAAA08f+QAAAAAAAANO//uQUAAAAAADTv/7kJAAAAAAA07/+zBwAAAAAANO//rgUAAAAAAACr///5+Pj4+KoAAKz/////////sAA=","3":"AHj/////////IAAAdPj4+Pj6//8eAAAAAAAAGNL/eQAAAAAAACHc/WgAAAAAAAAk5v+GAQAAAAAAAFz////ZNAAAAAAALHyF0//pEQAAAAAAAAAM7P9bAAAAAAAAAADF/30AAKq8SgAAAND/egAAvf/NIgRe/v9PAAA++////v//xwMAAAAvsOT11H0KAAA=","4":"AAAAAABx//EfAAAAAAAAMPj/WwAAAAAAAArX/6UAAAAAAAAAm//gDwAAAAAAAFP//TwAAAAAAAAd7v+EACD//yQAAL7/yQQAIP//JAAA8P9BAAAg//8kAADw//n4+Pn//yQAAPD/////////JAAAAAAAAAAg//8kAAAAAAAAACD//yQAAAAAAAAAIP//JAA=","5":"AHD/////////DAAAcP/9+Pj4+PgLAABw/7AAAAAAAAAAAHD/sQAAAAAAAAAAcP+zAAAAAAAAAABw////+tuVFgAAAGz4+Pj8///fDAAAAAAAAAJH+P9kAAAAAAAAAAC9/4gAAICUPQAAAL3/hwAAuf/LIQNI9/9hAAA++v///v//2AkAAAAvreP214oRAAA=","6":"AAAAADz//0wAAAAAAAABy/+3AAAAAAAAAF3/+icAAAAAAAAJ4/+LAAAAAAAAAH3/5w0AAAAAAAAP8v+93fXDPAAAAHn//9+76//5LgAA2P+oBAAP0f+fAAT+/zwAAABx/80AAPX/SwAAAID/xQAAsv/TKwRC7v+EAAAp8f///v//2xEAAAAkpej535ARAAA=","7":"AMz//////////xQAzP/7+Pj4+v//EwDM/3QAAACU/9cBAMz/dAAAD/P/agAADxQJAABz/+8LAAAAAAAAA9//jQAAAAAAAABS//0hAAAAAAAAAML/rwAAAAAAAAAx//9BAAAAAAAAAKH/0gAAAAAAAAAX+f9kAAAAAAAAAIH/7AkAAAAAAAAH6f+HAAAAAAA=","8":"AAAio+j5344RAAAAH+v///7//9IHAACJ/+ArA0b2/1kAAKD/kQAAAML/bwAAWv/gKwJG9vwrAAAAc+v//v/bUAAAAAqm/P////WBAAAAmf/SMgpH7P9iAADy/0QAAAB1/74AA/z/QAAAAHH/ywAAx//LKAM85/+RAAA59////v//4hgAAAAqp+j54ZQVAAA=","9":"AAAmpOf43owPAAAAL/T///7//9YNAAC7/80pBD7q/3wAAfn/RQAAAHn/wQAD/P9EAAAAef/PAADH/8wnAzzp/6QAAD/7///+////RwAAADm99Oj3/9AAAAAAAAAATP//TAAAAAAAAATY/7wAAAAAAAAAbv/9LwAAAAAAABHt/5wAAAAAAAAAkP/zGAAAAAA=","C":"AAATkuH55JkYAAAADNf///7//+ATAABp//Q+AzPr/3wAAJf/rAAAAHfEgwAAoP+gAAAAAAAAAACg/6AAAAAAAAAAAKD/oAAAAAAAAAAAoP+gAAAAAAAAAACg/6AAAAAAAAAAAJf/rAAAAHrIhQAAav/0PgIy6/98AAAN2f///v//4RMAAAAUluP55p0ZAAA=","X":"E/H/egAAAKH/zQEAfP/sDAAk/P9FAAAL5/94AKH/vAAAAABr/+ss/P40AAAAAAXc/+D/qQAAAAAAAFr///skAAAAAAAACfb/zAAAAAAAAAB1////RQAAAAAAE+//wf/QAgAAAACQ/8sY9f9fAAAAI/n/RQCI/+IIAACs/78AABHw/3gAOf//OAAAAHv/8RQ=","-":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB4+Pj4+PhFAAAAAHz//////0gAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}}};
+const _GS = GLYPH_SETS[SIZE] || GLYPH_SETS.big;
+const GW = _GS.GW, GH = _GS.GH;
+const IH = Math.round(GH * 1.8); // 아이콘 높이 (숫자 축소분 보정 → 아이콘 크기 유지)
+const GLYPH_BYTES = Object.fromEntries(
+  Object.entries(_GS.g).map(([k, v]) => [k, Buffer.from(v, "base64")]),
+);
+function _blit(buf, DW, DH, x, y, ch, color) {
+  const g = GLYPH_BYTES[ch];
+  if (!g) return;
+  const [r, gg, b] = color;
+  for (let gy = 0; gy < GH; gy++)
+    for (let gx = 0; gx < GW; gx++) {
+      const a = g[gy * GW + gx];
+      if (!a) continue;
+      const px = x + gx,
+        py = y + gy;
+      if (px < 0 || py < 0 || px >= DW || py >= DH) continue;
+      const o = (py * DW + px) * 4;
+      const ba = buf[o + 3];
+      if (ba === 0) {
+        buf[o] = r; buf[o + 1] = gg; buf[o + 2] = b; buf[o + 3] = a;
+      } else {
+        const af = a / 255, ia = 1 - af;
+        buf[o] = Math.round(r * af + buf[o] * ia);
+        buf[o + 1] = Math.round(gg * af + buf[o + 1] * ia);
+        buf[o + 2] = Math.round(b * af + buf[o + 2] * ia);
+        buf[o + 3] = Math.max(ba, a);
+      }
+    }
+}
+function _fill(buf, DW, DH, x, y, w, h, color) {
+  const [r, g, b] = color;
+  for (let j = 0; j < h; j++)
+    for (let i = 0; i < w; i++) {
+      const px = x + i, py = y + j;
+      if (px < 0 || py < 0 || px >= DW || py >= DH) continue;
+      const o = (py * DW + px) * 4;
+      buf[o] = r; buf[o + 1] = g; buf[o + 2] = b; buf[o + 3] = 255;
+    }
+}
+// SLIM 스타일(예쁜 폰트): 라벨(C/X) + 잔량 숫자(신호색) + 아래 얇은 밑줄 게이지. device 해상도 렌더링.
+// ── 커스텀 아이콘: ~/.claude/swiftbar/icon-claude.png · icon-codex.png 있으면 라벨로 사용 ──
+// 자체 PNG 디코더(8-bit, colorType 0/2/3/4/6, non-interlaced) + 면적평균 리사이즈 + 알파 합성. 의존성 0.
+function decodePNG(buf) {
+  const sig = [137, 80, 78, 71, 13, 10, 26, 10];
+  for (let i = 0; i < 8; i++) if (buf[i] !== sig[i]) return null;
+  let p = 8, w = 0, h = 0, bitDepth = 0, colorType = 0, interlace = 0;
+  let idat = [], plte = null, trns = null;
+  while (p < buf.length) {
+    const len = buf.readUInt32BE(p);
+    const type = buf.toString("ascii", p + 4, p + 8);
+    const d = p + 8;
+    if (type === "IHDR") { w = buf.readUInt32BE(d); h = buf.readUInt32BE(d + 4); bitDepth = buf[d + 8]; colorType = buf[d + 9]; interlace = buf[d + 12]; }
+    else if (type === "PLTE") plte = buf.subarray(d, d + len);
+    else if (type === "tRNS") trns = buf.subarray(d, d + len);
+    else if (type === "IDAT") idat.push(buf.subarray(d, d + len));
+    else if (type === "IEND") break;
+    p = d + len + 4;
+  }
+  if (bitDepth !== 8 || interlace !== 0) return null;
+  const ch = colorType === 0 ? 1 : colorType === 2 ? 3 : colorType === 3 ? 1 : colorType === 4 ? 2 : colorType === 6 ? 4 : 0;
+  if (!ch) return null;
+  let raw;
+  try { raw = zlib.inflateSync(Buffer.concat(idat)); } catch { return null; }
+  const stride = w * ch;
+  const out = Buffer.alloc(stride * h);
+  const paeth = (a, b, c) => { const pp = a + b - c, pa = Math.abs(pp - a), pb = Math.abs(pp - b), pc = Math.abs(pp - c); return pa <= pb && pa <= pc ? a : pb <= pc ? b : c; };
+  let ri = 0;
+  for (let y = 0; y < h; y++) {
+    const f = raw[ri++];
+    for (let x = 0; x < stride; x++) {
+      const v = raw[ri++];
+      const a = x >= ch ? out[y * stride + x - ch] : 0;
+      const b = y > 0 ? out[(y - 1) * stride + x] : 0;
+      const c = x >= ch && y > 0 ? out[(y - 1) * stride + x - ch] : 0;
+      let r;
+      if (f === 0) r = v; else if (f === 1) r = v + a; else if (f === 2) r = v + b; else if (f === 3) r = v + ((a + b) >> 1); else if (f === 4) r = v + paeth(a, b, c); else return null;
+      out[y * stride + x] = r & 255;
+    }
+  }
+  const rgba = Buffer.alloc(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    let R, G, B, A = 255;
+    if (colorType === 0) { R = G = B = out[i]; if (trns && trns.length >= 2 && out[i] === trns[1]) A = 0; }
+    else if (colorType === 2) { R = out[i * 3]; G = out[i * 3 + 1]; B = out[i * 3 + 2]; if (trns && trns.length >= 6 && R === trns[1] && G === trns[3] && B === trns[5]) A = 0; }
+    else if (colorType === 3) { const idx = out[i]; R = plte[idx * 3]; G = plte[idx * 3 + 1]; B = plte[idx * 3 + 2]; A = trns && idx < trns.length ? trns[idx] : 255; }
+    else if (colorType === 4) { R = G = B = out[i * 2]; A = out[i * 2 + 1]; }
+    else { R = out[i * 4]; G = out[i * 4 + 1]; B = out[i * 4 + 2]; A = out[i * 4 + 3]; }
+    rgba[i * 4] = R; rgba[i * 4 + 1] = G; rgba[i * 4 + 2] = B; rgba[i * 4 + 3] = A;
+  }
+  return { w, h, rgba };
+}
+function resizeRGBA(src, sw, sh, dw, dh) {
+  const out = Buffer.alloc(dw * dh * 4);
+  for (let dy = 0; dy < dh; dy++) {
+    const sy0 = Math.floor((dy * sh) / dh), sy1 = Math.max(sy0 + 1, Math.floor(((dy + 1) * sh) / dh));
+    for (let dx = 0; dx < dw; dx++) {
+      const sx0 = Math.floor((dx * sw) / dw), sx1 = Math.max(sx0 + 1, Math.floor(((dx + 1) * sw) / dw));
+      let r = 0, g = 0, b = 0, a = 0, n = 0;
+      for (let sy = sy0; sy < sy1; sy++) for (let sx = sx0; sx < sx1; sx++) {
+        const o = (sy * sw + sx) * 4, al = src[o + 3];
+        r += src[o] * al; g += src[o + 1] * al; b += src[o + 2] * al; a += al; n++;
+      }
+      const oo = (dy * dw + dx) * 4;
+      if (a > 0) { out[oo] = Math.round(r / a); out[oo + 1] = Math.round(g / a); out[oo + 2] = Math.round(b / a); out[oo + 3] = Math.round(a / n); }
+      else { out[oo] = out[oo + 1] = out[oo + 2] = out[oo + 3] = 0; }
+    }
+  }
+  return out;
+}
+function _blitRGBA(buf, DW, DH, x, y, src, sw, sh) {
+  for (let sy = 0; sy < sh; sy++) for (let sx = 0; sx < sw; sx++) {
+    const so = (sy * sw + sx) * 4, a = src[so + 3];
+    if (!a) continue;
+    const px = x + sx, py = y + sy;
+    if (px < 0 || py < 0 || px >= DW || py >= DH) continue;
+    const o = (py * DW + px) * 4, ba = buf[o + 3];
+    if (ba === 0) { buf[o] = src[so]; buf[o + 1] = src[so + 1]; buf[o + 2] = src[so + 2]; buf[o + 3] = a; }
+    else { const af = a / 255, ia = 1 - af; buf[o] = Math.round(src[so] * af + buf[o] * ia); buf[o + 1] = Math.round(src[so + 1] * af + buf[o + 1] * ia); buf[o + 2] = Math.round(src[so + 2] * af + buf[o + 2] * ia); buf[o + 3] = Math.max(ba, a); }
+  }
+}
+function _blitTinted(buf, DW, DH, x, y, src, sw, sh, color) {
+  const [r, g, b] = color;
+  for (let sy = 0; sy < sh; sy++) for (let sx = 0; sx < sw; sx++) {
+    const a = src[(sy * sw + sx) * 4 + 3];
+    if (!a) continue;
+    const px = x + sx, py = y + sy;
+    if (px < 0 || py < 0 || px >= DW || py >= DH) continue;
+    const o = (py * DW + px) * 4, ba = buf[o + 3];
+    if (ba === 0) { buf[o] = r; buf[o + 1] = g; buf[o + 2] = b; buf[o + 3] = a; }
+    else { const af = a / 255, ia = 1 - af; buf[o] = Math.round(r * af + buf[o] * ia); buf[o + 1] = Math.round(g * af + buf[o + 1] * ia); buf[o + 2] = Math.round(b * af + buf[o + 2] * ia); buf[o + 3] = Math.max(ba, a); }
+  }
+}
+const ICON_FILES = { C: `${SWDIR}/icon-claude.png`, X: `${SWDIR}/icon-codex.png` };
+function loadIcon(prefix) {
+  try {
+    const dec = decodePNG(readFileSync(ICON_FILES[prefix]));
+    if (!dec) return null;
+    const dh = IH;
+    let dw = Math.round((IH * dec.w) / dec.h);
+    dw = Math.max(1, Math.min(dw, IH * 2));
+    const rgba = resizeRGBA(dec.rgba, dec.w, dec.h, dw, dh);
+    // 단색 실루엣이면서 (거의 검정 또는 거의 흰색)이면 테마색으로 tint → 다크/라이트 어디서나 보이게
+    let mono = true, c0 = null;
+    for (let i = 0; i < dw * dh; i++) {
+      if (rgba[i * 4 + 3] < 128) continue;
+      const R = rgba[i * 4], G = rgba[i * 4 + 1], B = rgba[i * 4 + 2];
+      if (!c0) c0 = [R, G, B];
+      else if (Math.abs(R - c0[0]) > 28 || Math.abs(G - c0[1]) > 28 || Math.abs(B - c0[2]) > 28) { mono = false; break; }
+    }
+    let tint = false;
+    if (mono && c0) {
+      const mx = Math.max(c0[0], c0[1], c0[2]), mn = Math.min(c0[0], c0[1], c0[2]);
+      if (mx < 60 || mn > 200) tint = true; // 거의 검정 / 거의 흰색
+    }
+    return { rgba, w: dw, h: dh, tint };
+  } catch {
+    return null;
+  }
+}
+const LABEL_ASSET = { C: loadIcon("C"), X: loadIcon("X") };
+
+// SLIM 스타일: 라벨(아이콘 또는 C/X) + 잔량 숫자(신호색) + 얇은 밑줄 게이지. device 해상도.
+// SLIM 스타일: 라벨(아이콘/C·X) + 잔량 숫자(신호색) + 얇은 밑줄 게이지. 아이콘은 세로 중앙정렬.
 function renderBatteryImage(dark, items) {
   const ink = dark ? [235, 235, 235] : [45, 45, 45];
-  const CAPW = PRESET.capw,
-    GAP = PRESET.gap,
-    GGAP = PRESET.ggap,
-    PAD = PRESET.pad,
-    LBLGAP = PRESET.lblgap;
-  const H = PRESET.H;
-  const midY = Math.floor(H / 2);
-  // 폭 계산 (그룹 라벨 포함)
-  let W = PAD * 2;
-  let pg = null;
-  for (let i = 0; i < items.length; i++) {
-    const g = items[i].label[0];
-    if (g !== pg) {
-      if (pg !== null) W += GGAP;
-      W += numW(g) + LBLGAP;
-      pg = g;
-    } else W += GAP;
-    W += CAPW;
+  const dim = dark ? [92, 92, 96] : [176, 176, 182];
+  const small = SIZE === "small";
+  const PAD = 2, LBLGAP = small ? 2 : 3, ITEMGAP = small ? 3 : 4, GGAP = small ? 6 : 9, VGAP = small ? 2 : 3, BARH = small ? 3 : 4;
+  const labelW = (g) => (LABEL_ASSET[g] ? LABEL_ASSET[g].w : GW);
+  const numStr = (r) => (r == null ? "-" : String(Math.round(r)));
+  const itemW = (r) => GW * numStr(r).length;
+  let W = PAD * 2, pg = null;
+  for (const it of items) {
+    const g = it.label[0];
+    if (g !== pg) { if (pg !== null) W += GGAP; W += labelW(g) + LBLGAP; pg = g; }
+    else W += ITEMGAP;
+    W += itemW(it.remain);
   }
-  const cv = makeCanvas(Math.max(W, 8), H);
-  let x = PAD;
-  pg = null;
-  for (let i = 0; i < items.length; i++) {
-    const g = items[i].label[0];
+  const blockH = GH + VGAP + BARH; // 숫자+게이지 묶음 높이
+  const contentH = Math.max(blockH, IH);
+  const numY = PAD + Math.round((contentH - blockH) / 2);
+  const iconY = PAD + Math.round((contentH - IH) / 2);
+  const barY = numY + GH + VGAP;
+  const DW = Math.max(W, 8), DH = PAD + contentH + PAD;
+  const buf = Buffer.alloc(DW * DH * 4, 0);
+  let x = PAD; pg = null;
+  for (const it of items) {
+    const g = it.label[0];
     if (g !== pg) {
       if (pg !== null) x += GGAP;
-      drawNum(cv, x, midY - PRESET.dy, g, ink); // 그룹 라벨 C 또는 X
-      x += numW(g) + LBLGAP;
+      const ic = LABEL_ASSET[g];
+      if (ic && ic.tint) _blitTinted(buf, DW, DH, x, iconY, ic.rgba, ic.w, ic.h, ink);
+      else if (ic) _blitRGBA(buf, DW, DH, x, iconY, ic.rgba, ic.w, ic.h);
+      else _blit(buf, DW, DH, x, numY, g, ink);
+      x += labelW(g) + LBLGAP;
       pg = g;
-    } else x += GAP;
-    drawCapsule(cv, x, midY, items[i].remain, ink, dark);
-    x += CAPW;
+    } else x += ITEMGAP;
+    const r = it.remain;
+    if (r == null) {
+      _blit(buf, DW, DH, x, numY, "-", dim);
+      _fill(buf, DW, DH, x, barY, GW, BARH, dim);
+      x += GW;
+    } else {
+      const col = heatRemain(r, dark);
+      const s = String(Math.round(r));
+      for (let i = 0; i < s.length; i++) _blit(buf, DW, DH, x + i * GW, numY, s[i], col);
+      const w = GW * s.length;
+      _fill(buf, DW, DH, x, barY, w, BARH, dim);
+      const v = Math.max(0, Math.min(100, r));
+      const fw = Math.round((v / 100) * w);
+      if (fw > 0) _fill(buf, DW, DH, x, barY, fw, BARH, col);
+      x += w;
+    }
   }
-  return encodePNG(cv.w, cv.h, cv.buf).toString("base64");
+  return encodePNG(DW, DH, buf).toString("base64");
 }
 function isDarkMode() {
   try {
@@ -648,10 +876,14 @@ const hasCodex = !!codex;
 const battItems = [];
 // Claude — usage-cache 있으면 3종, 없어도 ccusage 블록이 있으면 C5만. 둘 다 없으면 Claude 배터리 생략.
 if (cusage) {
-  battItems.push({ label: "C5", remain: rem(cusage.fiveHour?.pct) });
-  battItems.push({ label: "CW", remain: rem(cusage.weekly?.pct) });
-  if (cusage.fable)
-    battItems.push({ label: "CF", remain: rem(cusage.fable.pct) });
+  battItems.push(
+    ...pickItems(
+      "C",
+      { has: cusage.fiveHour != null, remain: rem(cusage.fiveHour?.pct) },
+      { has: cusage.weekly != null, remain: rem(cusage.weekly?.pct) },
+      cusage.fable ? { has: true, remain: rem(cusage.fable.pct) } : null,
+    ),
+  );
 } else if (claude && !claude.error) {
   battItems.push({ label: "C5", remain: Math.max(0, 100 - claude.elapsedPct) });
 }
@@ -660,8 +892,14 @@ if (codex && (codex.primary || codex.secondary)) {
   // prolite: 5시간·주간 % 창
   const p = windowState(codex.primary);
   const s = windowState(codex.secondary);
-  battItems.push({ label: "X5", remain: p ? Math.max(0, 100 - p.pct) : null });
-  battItems.push({ label: "XW", remain: s ? Math.max(0, 100 - s.pct) : null });
+  battItems.push(
+    ...pickItems(
+      "X",
+      { has: !!p, remain: p ? Math.max(0, 100 - p.pct) : null },
+      { has: !!s, remain: s ? Math.max(0, 100 - s.pct) : null },
+      null,
+    ),
+  );
 } else if (codex && codex.credits) {
   // premium: 크레딧 잔액 (총량 미제공 → 있음=100 / 소진=0 / 무제한=100)
   const cr = codex.credits;
@@ -830,8 +1068,25 @@ out.push(
     `↕ 배터리 크기: ${SIZE === "big" ? "크게 (기본)" : "작게"} — 클릭하면 ${other === "big" ? "크게" : "작게"}로 | bash=/bin/sh param1=-c param2="mkdir -p '${HOME}/.claude/swiftbar' && echo ${other} > '${SIZE_FILE}'" terminal=false refresh=true size=11 color=#8b949e`,
   );
 }
+// 표시 항목 전환 — 서비스별로 메뉴바에 어떤 창을 배터리로 띄울지 (submenu)
+{
+  const showLabel = (m) =>
+    m === "5h" ? "5시간" : m === "week" ? "주간" : m === "both" ? "5시간+주간" : "급한 쪽";
+  const opt = (file, cur, val, text) =>
+    `--${cur === val ? "✓ " : "   "}${text} | bash=/bin/sh param1=-c param2="mkdir -p '${SWDIR}' && echo ${val} > '${file}'" terminal=false refresh=true size=11 color=${cur === val ? "#3fb950" : "#8b949e"}`;
+  out.push(`🔧 Claude 표시: ${showLabel(CLAUDE_SHOW)} | size=11 color=#8b949e`);
+  out.push(opt(CLAUDE_SHOW_FILE, CLAUDE_SHOW, "5h", "5시간만 (기본)"));
+  out.push(opt(CLAUDE_SHOW_FILE, CLAUDE_SHOW, "week", "주간만"));
+  out.push(opt(CLAUDE_SHOW_FILE, CLAUDE_SHOW, "both", "5시간 + 주간 둘 다"));
+  out.push(opt(CLAUDE_SHOW_FILE, CLAUDE_SHOW, "worst", "급한 쪽 하나만"));
+  out.push(`🔧 Codex 표시: ${showLabel(CODEX_SHOW)} | size=11 color=#8b949e`);
+  out.push(opt(CODEX_SHOW_FILE, CODEX_SHOW, "5h", "5시간만 (기본)"));
+  out.push(opt(CODEX_SHOW_FILE, CODEX_SHOW, "week", "주간만"));
+  out.push(opt(CODEX_SHOW_FILE, CODEX_SHOW, "both", "5시간 + 주간 둘 다"));
+  out.push(opt(CODEX_SHOW_FILE, CODEX_SHOW, "worst", "급한 쪽 하나만"));
+}
 out.push(
-  `⭐ github.com/dennykim123/claude-codex-battery | href=https://github.com/dennykim123/claude-codex-battery size=11 color=#8b949e`,
+  `⭐ github.com/Siturasu/claude-codex-battery | href=https://github.com/Siturasu/claude-codex-battery size=11 color=#8b949e`,
 );
 // 위젯 끄기 — SwiftBar의 플러그인 비활성화 URL. 재활성화: SwiftBar 메뉴 → Plugins
 out.push(

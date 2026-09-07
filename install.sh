@@ -9,7 +9,7 @@ echo "────────────────────────�
 # 1) bun (필수)
 if ! command -v bun >/dev/null 2>&1; then
   echo "❌ bun이 없습니다. 먼저 설치하세요:"
-  echo "   curl -fsSL https://bun.sh/install | bash"
+  echo "   brew install oven-sh/bun/bun"
   exit 1
 fi
 BUN=$(command -v bun)
@@ -18,7 +18,7 @@ echo "✅ bun: $BUN"
 # 2) SwiftBar (필수)
 if [ ! -d "/Applications/SwiftBar.app" ]; then
   echo "❌ SwiftBar가 없습니다. 먼저 설치하세요:"
-  echo "   brew install swiftbar"
+  echo "   brew install --cask swiftbar"
   exit 1
 fi
 echo "✅ SwiftBar"

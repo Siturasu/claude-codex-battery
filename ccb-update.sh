@@ -2,11 +2,18 @@
 # Claude & Codex Usage Battery — self-update
 # 위젯 드롭다운의 "🆕 업데이트"에서 호출됨. 최신 스크립트를 내려받아 제자리 교체.
 set -e
-RAW="https://raw.githubusercontent.com/dennykim123/claude-codex-battery/main"
+RAW="https://raw.githubusercontent.com/Siturasu/claude-codex-battery/main"
 DEST_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEST="$DEST_DIR/claude-codex-usage.2m.js"
-BUN="$(command -v bun || echo "$HOME/.bun/bin/bun")"
+BUN="$(command -v bun || true)"
+if [ -z "$BUN" ]; then
+  for candidate in "$HOME/.bun/bin/bun" /opt/homebrew/bin/bun /usr/local/bin/bun; do
+    if [ -x "$candidate" ]; then BUN="$candidate"; break; fi
+  done
+fi
+if [ -z "$BUN" ]; then echo "bun을 찾을 수 없습니다. 설치 후 다시 실행하세요."; exit 1; fi
 TMP="$(mktemp)"
+trap 'rm -f "$TMP"' EXIT
 
 echo "최신 버전을 내려받는 중..."
 curl -fsSL --max-time 20 "$RAW/claude-codex-usage.2m.js" -o "$TMP"
