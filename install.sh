@@ -56,6 +56,10 @@ if [ -f assets/icon-claude.png ] && [ -f assets/icon-codex.png ]; then
 else
   echo "ⓘ  assets/ 아이콘 없음 — 메뉴바 라벨은 C/X 글자로 표시됩니다"
 fi
+# 표시 설정 기본값 — 처음 설치할 때만 씀 (메뉴에서 바꾸면 그 값이 유지됨)
+[ -f "$SWDIR/.batt-size" ]   || echo small > "$SWDIR/.batt-size"
+[ -f "$SWDIR/.batt-claude" ] || echo week > "$SWDIR/.batt-claude"
+[ -f "$SWDIR/.batt-codex" ]  || echo week > "$SWDIR/.batt-codex"
 
 # 6) SwiftBar에 폴더 지정 + 실행
 BID=$(defaults read /Applications/SwiftBar.app/Contents/Info CFBundleIdentifier 2>/dev/null || echo "com.ameba.SwiftBar")
