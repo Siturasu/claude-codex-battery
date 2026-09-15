@@ -47,6 +47,16 @@ cp ccb-update.sh "$PLUGIN_DIR/.ccb-update.sh"
 chmod +x "$PLUGIN_DIR/.ccb-update.sh"
 echo "✅ 플러그인 배치: $PLUGIN_DIR"
 
+# 커스텀 아이콘 배치 — 플러그인이 ~/.claude/swiftbar/icon-*.png 를 찾으면 C/X 글자 대신 아이콘으로 그림
+SWDIR="$HOME/.claude/swiftbar"
+mkdir -p "$SWDIR"
+if [ -f assets/icon-claude.png ] && [ -f assets/icon-codex.png ]; then
+  cp assets/icon-claude.png assets/icon-codex.png "$SWDIR/"
+  echo "✅ 커스텀 아이콘 배치: $SWDIR"
+else
+  echo "ⓘ  assets/ 아이콘 없음 — 메뉴바 라벨은 C/X 글자로 표시됩니다"
+fi
+
 # 6) SwiftBar에 폴더 지정 + 실행
 BID=$(defaults read /Applications/SwiftBar.app/Contents/Info CFBundleIdentifier 2>/dev/null || echo "com.ameba.SwiftBar")
 defaults write "$BID" PluginDirectory -string "$PLUGIN_DIR"

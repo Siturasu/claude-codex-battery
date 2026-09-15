@@ -51,4 +51,11 @@ bash install.sh
 
 업데이트는 메뉴의 **업데이트**를 누르거나 최신 ZIP을 받아 `bash install.sh`를 다시 실행합니다.
 
+## 커스텀 요소
+
+메뉴바 라벨과 숫자 폰트는 원본과 다르게 바꿔 두었습니다.
+
+- 아이콘: `assets/icon-claude.png`, `assets/icon-codex.png`. `install.sh`가 `~/.claude/swiftbar/`에 복사하고, 플러그인은 그 경로에 파일이 있으면 C, X 글자 대신 아이콘을 그립니다. 바꾸려면 같은 이름의 PNG(8비트, 비인터레이스)로 교체한 뒤 SwiftBar를 새로고침합니다. 검정이나 흰색 단색 실루엣이면 다크, 라이트 모드에 맞춰 자동으로 색을 입힙니다.
+- 폰트: 메뉴바 숫자는 JetBrains Mono Bold를 안티에일리어싱해 만든 글리프 아틀라스로 그립니다. 스크립트의 `GLYPH_SETS`에 base64로 들어 있어 별도 폰트 설치가 필요 없습니다. 크게 15x18, 작게 11x13 픽셀.
+
 [원본](https://github.com/dennykim123/claude-codex-battery) 기반. MIT 라이선스는 [LICENSE](LICENSE)를 참고하세요.

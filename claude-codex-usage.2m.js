@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // <xbar.title>Claude & Codex Usage</xbar.title>
-// <xbar.version>v1.4.0</xbar.version>
+// <xbar.version>v1.4.1</xbar.version>
 // <xbar.author>개발부스러기</xbar.author>
 // <xbar.desc>Claude Code 5시간 블록 + Codex rate limit을 메뉴바에 배터리 아이콘으로 상시 표시</xbar.desc>
 // SwiftBar 플러그인: 2분마다 갱신. 메뉴바=배터리 잔량 아이콘(자체 PNG), 클릭=상세 게이지.
@@ -46,7 +46,7 @@ const CODEX_SESSIONS = `${HOME}/.codex/sessions`;
 const now = Math.floor(Date.now() / 1000);
 
 // ── 자동 업데이트 (알림 + 원클릭) ──
-const VERSION = "1.4.0";
+const VERSION = "1.4.1";
 const SELF_DIR = dirname(process.argv[1] || `${HOME}/.swiftbar-plugins/x`);
 const REPO_RAW =
   "https://raw.githubusercontent.com/Siturasu/claude-codex-battery/main";

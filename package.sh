@@ -6,6 +6,8 @@ STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 mkdir "$STAGE/claude-codex-battery"
 cp README.md LICENSE VERSION install.sh ccb-update.sh claude-codex-usage.2m.js "$STAGE/claude-codex-battery/"
+mkdir "$STAGE/claude-codex-battery/assets"
+cp assets/icon-claude.png assets/icon-codex.png "$STAGE/claude-codex-battery/assets/"
 chmod +x "$STAGE/claude-codex-battery/install.sh" "$STAGE/claude-codex-battery/ccb-update.sh"
 OUT="$PWD/dist/claude-codex-battery-macos.zip"
 rm -f "$OUT"
