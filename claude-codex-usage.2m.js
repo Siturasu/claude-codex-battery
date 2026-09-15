@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // <xbar.title>Claude & Codex Usage</xbar.title>
-// <xbar.version>v1.5.0</xbar.version>
+// <xbar.version>v1.5.1</xbar.version>
 // <xbar.author>Denny Kim</xbar.author>
 // <xbar.desc>Shows remaining Claude Code 5h-block and Codex rate limits as battery icons in the menu bar</xbar.desc>
 // SwiftBar plugin, refreshes every 2 minutes. Menu bar = battery icons (self-rendered PNG), click = detailed gauges.
@@ -283,7 +283,7 @@ const CODEX_SESSIONS = `${HOME}/.codex/sessions`;
 const now = Math.floor(Date.now() / 1000);
 
 // ── Auto-update (notification + one click) ──
-const VERSION = "1.5.0";
+const VERSION = "1.5.1";
 const SELF_DIR = dirname(process.argv[1] || `${HOME}/.swiftbar-plugins/x`);
 const REPO_RAW =
   "https://raw.githubusercontent.com/Siturasu/claude-codex-battery/main";
@@ -403,6 +403,12 @@ const SIZE_FILE = `${HOME}/.claude/swiftbar/.batt-size`;
 let SIZE = "small";
 try {
   if (readFileSync(SIZE_FILE, "utf8").trim() === "big") SIZE = "big";
+} catch {}
+// ── 숫자 테두리: 밝은 메뉴바에서 노란 숫자가 안 보일 때 검은 1px 외곽선 — ~/.claude/swiftbar/.batt-outline (on/off, 기본 off) ──
+const OUTLINE_FILE = `${HOME}/.claude/swiftbar/.batt-outline`;
+let OUTLINE = false;
+try {
+  if (readFileSync(OUTLINE_FILE, "utf8").trim() === "on") OUTLINE = true;
 } catch {}
 
 // ── 메뉴바 표시 항목 커스텀 (서비스별) ──────────────────────
@@ -597,6 +603,13 @@ function _blit(buf, DW, DH, x, y, ch, color) {
       }
     }
 }
+// 글리프를 8방향 1px 오프셋으로 먼저 외곽선색으로 찍고 그 위에 본색을 얹어 테두리 효과
+function _blitOutlined(buf, DW, DH, x, y, ch, color, outline) {
+  for (let dy = -1; dy <= 1; dy++)
+    for (let dx = -1; dx <= 1; dx++)
+      if (dx || dy) _blit(buf, DW, DH, x + dx, y + dy, ch, outline);
+  _blit(buf, DW, DH, x, y, ch, color);
+}
 function _fill(buf, DW, DH, x, y, w, h, color) {
   const [r, g, b] = color;
   for (let j = 0; j < h; j++)
@@ -773,7 +786,9 @@ function renderBatteryImage(dark, items) {
     } else {
       const col = heatRemain(r, dark);
       const s = String(Math.round(r));
-      for (let i = 0; i < s.length; i++) _blit(buf, DW, DH, x + i * GW, numY, s[i], col);
+      for (let i = 0; i < s.length; i++)
+        if (OUTLINE) _blitOutlined(buf, DW, DH, x + i * GW, numY, s[i], col, [0, 0, 0]);
+        else _blit(buf, DW, DH, x + i * GW, numY, s[i], col);
       const w = GW * s.length;
       _fill(buf, DW, DH, x, barY, w, BARH, dim);
       const v = Math.max(0, Math.min(100, r));
@@ -1528,6 +1543,14 @@ out.push(
   const next = other === "big" ? L("크게", "big") : L("작게", "small");
   out.push(
     `↕ ${L("배터리 크기", "battery size")}: ${cur} — ${L("클릭하면", "click for")} ${next} | bash=/bin/sh param1=-c param2="mkdir -p '${HOME}/.claude/swiftbar' && echo ${other} > '${SIZE_FILE}'" terminal=false refresh=true size=11 color=#8b949e`,
+  );
+}
+// Outline toggle — write on/off to .batt-outline and refresh immediately
+{
+  const other = OUTLINE ? "off" : "on";
+  const cur = OUTLINE ? L("켬", "on") : L("끔 (기본)", "off (default)");
+  out.push(
+    `◐ ${L("숫자 검은 테두리", "number outline")}: ${cur} — ${L("클릭하면", "click to turn")} ${OUTLINE ? L("끔", "off") : L("켬", "on")} | bash=/bin/sh param1=-c param2="mkdir -p '${HOME}/.claude/swiftbar' && echo ${other} > '${OUTLINE_FILE}'" terminal=false refresh=true size=11 color=#8b949e`,
   );
 }
 // Per-service menu bar item picker — which window(s) each service shows (submenu)
