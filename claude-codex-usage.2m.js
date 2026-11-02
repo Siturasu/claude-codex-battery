@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // <xbar.title>Claude & Codex Usage</xbar.title>
-// <xbar.version>v1.5.1</xbar.version>
+// <xbar.version>v1.5.2</xbar.version>
 // <xbar.author>Denny Kim</xbar.author>
 // <xbar.desc>Shows remaining Claude Code 5h-block and Codex rate limits as battery icons in the menu bar</xbar.desc>
 // SwiftBar plugin, refreshes every 2 minutes. Menu bar = battery icons (self-rendered PNG), click = detailed gauges.
@@ -283,7 +283,7 @@ const CODEX_SESSIONS = `${HOME}/.codex/sessions`;
 const now = Math.floor(Date.now() / 1000);
 
 // ── Auto-update (notification + one click) ──
-const VERSION = "1.5.1";
+const VERSION = "1.5.2";
 const SELF_DIR = dirname(process.argv[1] || `${HOME}/.swiftbar-plugins/x`);
 const REPO_RAW =
   "https://raw.githubusercontent.com/Siturasu/claude-codex-battery/main";
@@ -969,6 +969,9 @@ function readClaudeToken() {
   return null;
 }
 
+// five_hour is null when no 5h session window is open (seen 2026-11), so weekly alone counts as valid
+const hasClaudeUsage = (d) => !!(d?.five_hour || d?.seven_day);
+
 function fetchClaudeUsageLive() {
   const token = readClaudeToken();
   if (!token) return null;
@@ -984,7 +987,7 @@ function fetchClaudeUsageLive() {
       },
     );
     const d = JSON.parse(raw);
-    if (!d?.five_hour) return null;
+    if (!hasClaudeUsage(d)) return null;
     try {
       mkdirSync(CLAUDE_STATE_DIR, { recursive: true });
       writeFileSync(
@@ -1001,13 +1004,13 @@ function fetchClaudeUsageLive() {
 function readClaudeUsageFallback() {
   try {
     const c = JSON.parse(readFileSync(CLAUDE_USAGE_CACHE, "utf8"));
-    if (c?.data?.five_hour)
+    if (hasClaudeUsage(c?.data))
       return { data: c.data, measuredAt: c.fetchedAt ?? 0, live: false };
   } catch {}
   for (const f of LEGACY_USAGE_FILES) {
     try {
       const d = JSON.parse(readFileSync(f, "utf8"));
-      if (d?.five_hour)
+      if (hasClaudeUsage(d))
         return {
           data: d,
           measuredAt: Math.floor(statSync(f).mtimeMs / 1000),
