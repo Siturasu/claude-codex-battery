@@ -59,6 +59,7 @@ bash install.sh
 - 표시 설정: 처음 설치하면 크기 작게, Claude와 Codex 모두 주간 잔량 표시로 시작합니다. 메뉴에서 바꾸면 그 값이 유지됩니다.
 - 숫자 테두리: 밝은 메뉴바에서 노란 숫자가 잘 안 보이면 메뉴의 "숫자 검은 테두리"를 켭니다. 값은 `~/.claude/swiftbar/.batt-outline`(on/off, 기본 off)에 저장됩니다.
 - 5시간 한도 없음 대응(1.5.2): 사용량 API가 `five_hour: null`을 주면 원본은 응답을 버리고 옛 캐시로 폴백한다. 주간 값만 있어도 유효한 응답으로 받는다.
+- 토큰 만료 표시(1.5.3): Claude Code 토큰(8시간)이 만료되면 사용량 API를 부르지 않고 '토큰 만료' 이유를 표시한다. 401, 그 밖의 HTTP 코드, 네트워크 실패도 구분해 보여 준다. 토큰 갱신은 Claude Code만 한다.
 - 폰트: 메뉴바 숫자는 JetBrains Mono Bold를 안티에일리어싱해 만든 글리프 아틀라스로 그립니다. 스크립트의 `GLYPH_SETS`에 base64로 들어 있어 별도 폰트 설치가 필요 없습니다. 크게 15x18, 작게 11x13 픽셀.
 
 [원본](https://github.com/dennykim123/claude-codex-battery) 기반. MIT 라이선스는 [LICENSE](LICENSE)를 참고하세요.

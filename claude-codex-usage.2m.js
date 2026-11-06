@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // <xbar.title>Claude & Codex Usage</xbar.title>
-// <xbar.version>v1.5.2</xbar.version>
+// <xbar.version>v1.5.3</xbar.version>
 // <xbar.author>Denny Kim</xbar.author>
 // <xbar.desc>Shows remaining Claude Code 5h-block and Codex rate limits as battery icons in the menu bar</xbar.desc>
 // SwiftBar plugin, refreshes every 2 minutes. Menu bar = battery icons (self-rendered PNG), click = detailed gauges.
@@ -138,6 +138,24 @@ const TR3 = {
     "zh-Hans": "{0} 前的缓存（回退 — 请检查 Claude Code 登录/网络）",
     "zh-Hant": "{0} 前的快取（備援 — 請檢查 Claude Code 登入/網路）",
     es: "caché de hace {0} (respaldo — revisa sesión/red de Claude Code)",
+  },
+  "token expired — use Claude Code once on this Mac to renew (cached {0} ago)": {
+    ja: "トークン期限切れ — このMacでClaude Codeを一度使うと更新 ({0}前のキャッシュ)",
+    "zh-Hans": "令牌已过期 — 在这台 Mac 上用一次 Claude Code 即可更新（{0} 前的缓存）",
+    "zh-Hant": "權杖已過期 — 在這台 Mac 上用一次 Claude Code 即可更新（{0} 前的快取）",
+    es: "token caducado — usa Claude Code una vez en este Mac para renovarlo (caché de hace {0})",
+  },
+  "live query failed: HTTP {1} (cached {0} ago)": {
+    ja: "ライブ取得失敗: HTTP {1} ({0}前のキャッシュ)",
+    "zh-Hans": "实时查询失败：HTTP {1}（{0} 前的缓存）",
+    "zh-Hant": "即時查詢失敗：HTTP {1}（{0} 前的快取）",
+    es: "consulta en vivo fallida: HTTP {1} (caché de hace {0})",
+  },
+  "live query failed — network/timeout (cached {0} ago)": {
+    ja: "ライブ取得失敗 — ネットワーク/タイムアウト ({0}前のキャッシュ)",
+    "zh-Hans": "实时查询失败 — 网络/超时（{0} 前的缓存）",
+    "zh-Hant": "即時查詢失敗 — 網路/逾時（{0} 前的快取）",
+    es: "consulta en vivo fallida — red/tiempo de espera (caché de hace {0})",
   },
   "live query failed — check login/network (local log from {0} ago)": {
     ja: "ライブ取得失敗 — ログイン/ネットワークを確認 ({0}前のローカルログ)",
@@ -283,7 +301,7 @@ const CODEX_SESSIONS = `${HOME}/.codex/sessions`;
 const now = Math.floor(Date.now() / 1000);
 
 // ── Auto-update (notification + one click) ──
-const VERSION = "1.5.2";
+const VERSION = "1.5.3";
 const SELF_DIR = dirname(process.argv[1] || `${HOME}/.swiftbar-plugins/x`);
 const REPO_RAW =
   "https://raw.githubusercontent.com/Siturasu/claude-codex-battery/main";
@@ -936,6 +954,8 @@ function getClaudeModels() {
 // Fallbacks on failure: own cache (last good response) → legacy usage-cache.json files.
 const CLAUDE_STATE_DIR = `${HOME}/.claude/swiftbar`;
 const CLAUDE_USAGE_CACHE = `${CLAUDE_STATE_DIR}/.claude-usage.json`;
+// Why the last live fetch failed: "expired" | "http:<code>" | "network" | null (unknown/no token)
+let claudeLiveFail = null;
 // Codex also supports live account-level queries: GET the ChatGPT usage endpoint
 // (/backend-api/wham/usage) that Codex CLI itself polls every 60s, using the auth.json token.
 // The response reports current limits without spending tokens, so it beats session logs
@@ -947,7 +967,8 @@ const LEGACY_USAGE_FILES = [
   `${HOME}/.claude/PAI/MEMORY/STATE/usage-cache.json`,
 ];
 
-// The token exists only as a return value — never written to files, logs, or process args
+// The token exists only as a return value — never written to files, logs, or process args.
+// Returns { token, expiresAt } (expiresAt: ms epoch or null) or null.
 function readClaudeToken() {
   // Opt-out: `touch ~/.claude/swiftbar/.no-live` disables Keychain access / live queries
   // — clicking 'Deny' on the Keychain prompt would re-prompt every 2 minutes; use this instead.
@@ -958,13 +979,14 @@ function readClaudeToken() {
       'security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null',
       { encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] },
     ).trim();
-    const t = JSON.parse(raw)?.claudeAiOauth?.accessToken;
-    if (t) return t;
+    const o = JSON.parse(raw)?.claudeAiOauth;
+    if (o?.accessToken) return { token: o.accessToken, expiresAt: o.expiresAt ?? null };
   } catch {}
   try {
     // For environments without the Keychain item (e.g. manual migration) — file credentials
     const raw = readFileSync(`${HOME}/.claude/.credentials.json`, "utf8");
-    return JSON.parse(raw)?.claudeAiOauth?.accessToken ?? null;
+    const o = JSON.parse(raw)?.claudeAiOauth;
+    if (o?.accessToken) return { token: o.accessToken, expiresAt: o.expiresAt ?? null };
   } catch {}
   return null;
 }
@@ -973,20 +995,36 @@ function readClaudeToken() {
 const hasClaudeUsage = (d) => !!(d?.five_hour || d?.seven_day);
 
 function fetchClaudeUsageLive() {
-  const token = readClaudeToken();
-  if (!token) return null;
+  const cred = readClaudeToken();
+  if (!cred) return null;
+  // Only Claude Code refreshes the 8h token; calling with an expired one just yields 401
+  if (cred.expiresAt != null && Date.now() >= cred.expiresAt) {
+    claudeLiveFail = "expired";
+    return null;
+  }
+  let out;
   try {
     // Authorization header passed via stdin (-H @-) — keeps the token out of `ps` output
-    const raw = execSync(
-      `/usr/bin/curl -fsS --max-time 5 -H @- -H "anthropic-beta: oauth-2025-04-20" https://api.anthropic.com/api/oauth/usage`,
+    out = execSync(
+      `/usr/bin/curl -sS --max-time 5 -w "\\n%{http_code}" -H @- -H "anthropic-beta: oauth-2025-04-20" https://api.anthropic.com/api/oauth/usage`,
       {
         encoding: "utf8",
         timeout: 8000,
-        input: `Authorization: Bearer ${token}\n`,
+        input: `Authorization: Bearer ${cred.token}\n`,
         stdio: ["pipe", "pipe", "ignore"],
       },
     );
-    const d = JSON.parse(raw);
+  } catch {
+    claudeLiveFail = "network";
+    return null;
+  }
+  const nl = out.lastIndexOf("\n");
+  const code = out.slice(nl + 1).trim();
+  if (code === "401") claudeLiveFail = "expired";
+  else if (code !== "200") claudeLiveFail = `http:${code}`;
+  if (code !== "200") return null;
+  try {
+    const d = JSON.parse(out.slice(0, nl));
     if (!hasClaudeUsage(d)) return null;
     try {
       mkdirSync(CLAUDE_STATE_DIR, { recursive: true });
@@ -999,6 +1037,17 @@ function fetchClaudeUsageLive() {
   } catch {
     return null;
   }
+}
+
+// Dropdown line for the cache fallback, naming the live-fetch failure reason when known
+function claudeLiveFailLine(ago) {
+  if (claudeLiveFail === "expired")
+    return tf("토큰 만료 — 이 맥에서 Claude Code를 한 번 쓰면 갱신 (측정 {0} 전 캐시)", "token expired — use Claude Code once on this Mac to renew (cached {0} ago)", ago);
+  if (claudeLiveFail?.startsWith("http:"))
+    return tf("라이브 조회 실패 HTTP {1} (측정 {0} 전 캐시)", "live query failed: HTTP {1} (cached {0} ago)", ago, claudeLiveFail.slice(5));
+  if (claudeLiveFail === "network")
+    return tf("라이브 조회 실패 — 네트워크·시간 초과 (측정 {0} 전 캐시)", "live query failed — network/timeout (cached {0} ago)", ago);
+  return tf("측정 {0} 전 (캐시 폴백 — Claude Code 로그인·네트워크 확인)", "cached {0} ago (fallback — check Claude Code login/network)", ago);
 }
 
 function readClaudeUsageFallback() {
@@ -1424,7 +1473,7 @@ if (hasClaude) {
     out.push(
       cusage.live
         ? `${L("라이브 (Anthropic usage API — 전 디바이스 합산)", "live (Anthropic usage API — all devices combined)")} | size=11 color=#8b949e`
-        : `${tf("측정 {0} 전 (캐시 폴백 — Claude Code 로그인·네트워크 확인)", "cached {0} ago (fallback — check Claude Code login/network)", fmtDur(now - cusage.measuredAt))} | size=11 color=#d29922`,
+        : `${claudeLiveFailLine(fmtDur(now - cusage.measuredAt))} | size=11 color=#d29922`,
     );
   }
   if (claude && !claude.error) {
