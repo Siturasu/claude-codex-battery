@@ -34,7 +34,7 @@ rm -f "$TMP"
 # 커스텀 아이콘이 없으면 함께 내려받음 (이미 있으면 그대로 둠)
 SWDIR="$HOME/.claude/swiftbar"
 mkdir -p "$SWDIR"
-for n in icon-claude icon-codex; do
+for n in icon-claude icon-codex icon-gemini; do
   [ -f "$SWDIR/$n.png" ] || curl -fsSL --max-time 20 "$RAW/assets/$n.png" -o "$SWDIR/$n.png" || rm -f "$SWDIR/$n.png"
 done
 

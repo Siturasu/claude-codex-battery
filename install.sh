@@ -51,6 +51,7 @@ echo "✅ 플러그인 배치: $PLUGIN_DIR"
 SWDIR="$HOME/.claude/swiftbar"
 mkdir -p "$SWDIR"
 if [ -f assets/icon-claude.png ] && [ -f assets/icon-codex.png ]; then
+  [ -f assets/icon-gemini.png ] && cp assets/icon-gemini.png "$SWDIR/"
   cp assets/icon-claude.png assets/icon-codex.png "$SWDIR/"
   echo "✅ 커스텀 아이콘 배치: $SWDIR"
 else
@@ -60,6 +61,7 @@ fi
 [ -f "$SWDIR/.batt-size" ]   || echo small > "$SWDIR/.batt-size"
 [ -f "$SWDIR/.batt-claude" ] || echo week > "$SWDIR/.batt-claude"
 [ -f "$SWDIR/.batt-codex" ]  || echo week > "$SWDIR/.batt-codex"
+[ -f "$SWDIR/.batt-gemini" ] || echo week > "$SWDIR/.batt-gemini"
 
 # 6) SwiftBar에 폴더 지정 + 실행
 BID=$(defaults read /Applications/SwiftBar.app/Contents/Info CFBundleIdentifier 2>/dev/null || echo "com.ameba.SwiftBar")
