@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 // <xbar.title>Claude & Codex Usage</xbar.title>
-// <xbar.version>v1.5.3</xbar.version>
+// <xbar.version>v1.7.0</xbar.version>
 // <xbar.author>Denny Kim</xbar.author>
 // <xbar.desc>Shows remaining Claude Code 5h-block and Codex rate limits as battery icons in the menu bar</xbar.desc>
 // SwiftBar plugin, refreshes every 2 minutes. Menu bar = battery icons (self-rendered PNG), click = detailed gauges.
 
-import { execSync, spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
   readFileSync,
   writeFileSync,
@@ -13,9 +13,15 @@ import {
   statSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  chmodSync,
+  copyFileSync,
 } from "node:fs";
-import { join, dirname } from "node:path";
-import { homedir } from "node:os";
+import { join, dirname, delimiter } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 import zlib from "node:zlib";
 
 const HOME = homedir();
@@ -56,9 +62,10 @@ const UI_LANG = (() => {
     if (SUPPORTED_LANGS.includes(n)) return n;
   }
   try {
-    const out = execSync("defaults read -g AppleLanguages 2>/dev/null", {
+    const out = execFileSync("/usr/bin/defaults", ["read", "-g", "AppleLanguages"], {
       encoding: "utf8",
       timeout: 3000,
+      stdio: ["ignore", "pipe", "ignore"],
     });
     const m = out.match(/"\s*([A-Za-z-]+)/);
     if (m) {
@@ -288,12 +295,13 @@ function findBin(name, extra = []) {
       if (existsSync(c)) return c;
     } catch {}
   }
-  try {
-    const p = execSync(`command -v ${name} 2>/dev/null`, {
-      encoding: "utf8",
-    }).trim();
-    if (p) return p;
-  } catch {}
+  // PATH lookup in JS instead of `command -v` through a shell
+  for (const d of (process.env.PATH || "").split(delimiter)) {
+    if (!d) continue;
+    try {
+      if (existsSync(join(d, name))) return join(d, name);
+    } catch {}
+  }
   return name; // last resort: rely on PATH
 }
 const CCUSAGE = findBin("ccusage");
@@ -301,11 +309,33 @@ const CODEX_SESSIONS = `${HOME}/.codex/sessions`;
 const now = Math.floor(Date.now() / 1000);
 
 // ── Auto-update (notification + one click) ──
-const VERSION = "1.6.0";
-const SELF_DIR = dirname(process.argv[1] || `${HOME}/.swiftbar-plugins/x`);
-const REPO_RAW =
-  "https://raw.githubusercontent.com/Siturasu/claude-codex-battery/main";
+// Updates come only from tagged GitHub releases: the zip is checked against the release's
+// SHA256SUMS.txt before anything is replaced, and files are swapped in with an atomic rename.
+const VERSION = "1.7.0";
+const SELF_PATH = process.argv[1] || `${HOME}/.swiftbar-plugins/claude-codex-usage.2m.js`;
+const SELF_DIR = dirname(SELF_PATH);
+const REPO = "Siturasu/claude-codex-battery";
+const UPDATE_ASSET = "claude-codex-battery-macos.zip";
+// Tests point the updater at a local fake release server; only loopback http is accepted
+const UPDATE_TEST_BASE = /^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(process.env.CCB_UPDATE_TEST_BASE || "")
+  ? process.env.CCB_UPDATE_TEST_BASE
+  : null;
+const RELEASE_API = UPDATE_TEST_BASE
+  ? `${UPDATE_TEST_BASE}/latest.json`
+  : `https://api.github.com/repos/${REPO}/releases/latest`;
+const RELEASE_DL = UPDATE_TEST_BASE
+  ? `${UPDATE_TEST_BASE}/download`
+  : `https://github.com/${REPO}/releases/download`;
 const UPDATE_CACHE = `${HOME}/.claude/swiftbar/.update-check.json`;
+// bun path from this file's shebang (install.sh writes the stable `command -v bun` path there;
+// process.execPath can be a versioned Homebrew Cellar path that disappears on upgrade)
+const BUN_BIN = (() => {
+  try {
+    const m = readFileSync(SELF_PATH, "utf8").slice(0, 512).match(/^#!(\/[^\s]*bun)\s*$/m);
+    if (m && m.index === 0 && existsSync(m[1])) return m[1];
+  } catch {}
+  return process.execPath;
+})();
 function cmpVer(a, b) {
   const pa = String(a).split(".").map(Number);
   const pb = String(b).split(".").map(Number);
@@ -315,8 +345,110 @@ function cmpVer(a, b) {
   }
   return 0;
 }
-// Read the cached latest version; if 24h+ old, quietly check GitHub's VERSION file
-// in the background (doesn't block rendering — detached spawn + unref)
+// Write next to the target under a dot name (SwiftBar skips hidden files), then rename over it
+function atomicWrite(dest, data, mode = 0o644) {
+  const tmp = join(dirname(dest), `.ccb-new-${process.pid}-${dest.split("/").pop()}`);
+  try {
+    writeFileSync(tmp, data, { mode });
+    chmodSync(tmp, mode);
+    renameSync(tmp, dest);
+  } catch (e) {
+    try { rmSync(tmp, { force: true }); } catch {}
+    throw e;
+  }
+}
+async function fetchBytes(url, limit) {
+  const res = await fetch(url, {
+    headers: { "User-Agent": "claude-codex-battery", Accept: "application/octet-stream, application/json" },
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${url}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length > limit) throw new Error(`too large: ${url}`);
+  return buf;
+}
+async function latestRelease() {
+  const rel = JSON.parse((await fetchBytes(RELEASE_API, 1 << 20)).toString("utf8"));
+  const tag = String(rel?.tag_name || "");
+  if (!/^v\d+\.\d+\.\d+$/.test(tag)) throw new Error(`unexpected release tag: ${tag.slice(0, 40)}`);
+  return { tag, version: tag.slice(1) };
+}
+// --check-update: background job that records the latest release version for the menu
+async function checkUpdate() {
+  const { version } = await latestRelease();
+  mkdirSync(dirname(UPDATE_CACHE), { recursive: true });
+  atomicWrite(UPDATE_CACHE, JSON.stringify({ checkedAt: Math.floor(Date.now() / 1000), latest: version }));
+}
+function notify(msg) {
+  if (UPDATE_TEST_BASE || process.platform !== "darwin") return;
+  try {
+    execFileSync(
+      "/usr/bin/osascript",
+      ["-e", "on run argv", "-e", 'display notification (item 1 of argv) with title "Claude & Codex Battery"', "-e", "end run", msg],
+      { stdio: "ignore", timeout: 5000 },
+    );
+  } catch {}
+}
+// --self-update: download the latest release, verify SHA256, then replace in place
+async function selfUpdate() {
+  const work = mkdtempSync(join(tmpdir(), "ccb-update-"));
+  try {
+    const { tag, version } = await latestRelease();
+    if (cmpVer(version, VERSION) <= 0) {
+      const msg = tf("이미 최신입니다 (v{0}, 최신 릴리스 v{1})", "Already up to date (v{0}, latest release v{1})", VERSION, version);
+      console.log(msg);
+      notify(msg);
+      return 0;
+    }
+    const sums = (await fetchBytes(`${RELEASE_DL}/${tag}/SHA256SUMS.txt`, 1 << 16)).toString("utf8");
+    const line = sums.split("\n").map((l) => l.trim().match(/^([0-9a-f]{64})\s+\*?(\S+)$/)).find((m) => m && m[2] === UPDATE_ASSET);
+    if (!line) throw new Error(`SHA256SUMS.txt has no entry for ${UPDATE_ASSET}`);
+    const zip = await fetchBytes(`${RELEASE_DL}/${tag}/${UPDATE_ASSET}`, 20 << 20);
+    const got = createHash("sha256").update(zip).digest("hex");
+    if (got !== line[1]) throw new Error(`SHA256 mismatch for ${UPDATE_ASSET} (expected ${line[1]}, got ${got})`);
+    const zipPath = join(work, UPDATE_ASSET);
+    writeFileSync(zipPath, zip);
+    const ex = join(work, "x");
+    execFileSync("/usr/bin/unzip", ["-q", zipPath, "-d", ex], { stdio: "ignore", timeout: 30000 });
+    const root = join(ex, "claude-codex-battery");
+    const js = readFileSync(join(root, "claude-codex-usage.2m.js"), "utf8");
+    const zipVer = readFileSync(join(root, "VERSION"), "utf8").trim();
+    if (zipVer !== version || !js.startsWith("#!") || !js.includes(`const VERSION = "${version}";`))
+      throw new Error(`release contents do not match ${tag}`);
+    const updater = readFileSync(join(root, "ccb-update.sh"));
+    // All checks passed: back up, then swap files in
+    try { copyFileSync(SELF_PATH, `${SELF_PATH}.bak`); } catch {}
+    atomicWrite(SELF_PATH, js.replace(/^#![^\n]*/, `#!${BUN_BIN}`), 0o755);
+    atomicWrite(join(SELF_DIR, ".ccb-update.sh"), updater, 0o755);
+    const swdir = `${HOME}/.claude/swiftbar`;
+    mkdirSync(swdir, { recursive: true });
+    for (const n of ["icon-claude", "icon-codex", "icon-gemini"]) {
+      const src = join(root, "assets", `${n}.png`);
+      if (!existsSync(`${swdir}/${n}.png`) && existsSync(src)) atomicWrite(`${swdir}/${n}.png`, readFileSync(src));
+    }
+    try { rmSync(UPDATE_CACHE, { force: true }); } catch {}
+    if (!UPDATE_TEST_BASE) {
+      try { execFileSync("/usr/bin/open", ["swiftbar://refreshallplugins"], { stdio: "ignore", timeout: 5000 }); } catch {}
+    }
+    const msg = tf("v{0}로 업데이트했습니다 (SHA256 확인됨)", "Updated to v{0} (SHA256 verified)", version);
+    console.log(msg);
+    notify(msg);
+    return 0;
+  } catch (e) {
+    const msg = tf("업데이트 중단, 기존 파일 유지: {0}", "Update aborted, existing files kept: {0}", String(e?.message || e));
+    console.error(msg);
+    notify(msg);
+    return 1;
+  } finally {
+    try { rmSync(work, { recursive: true, force: true }); } catch {}
+  }
+}
+if (process.argv.includes("--self-update")) process.exit(await selfUpdate());
+if (process.argv.includes("--check-update")) {
+  try { await checkUpdate(); } catch {}
+  process.exit(0);
+}
+// Read the cached latest version; if 24h+ old, refresh it in a detached background job
 function getUpdateInfo() {
   let cache = null;
   try {
@@ -325,17 +457,10 @@ function getUpdateInfo() {
   const age = cache?.checkedAt ? now - cache.checkedAt : Infinity;
   if (age > 24 * 3600) {
     try {
-      const cmd =
-        `latest=$(curl -fsL --max-time 8 "${REPO_RAW}/VERSION" 2>/dev/null | tr -d '[:space:]'); ` +
-        `[ -n "$latest" ] && printf '{"checkedAt":%s,"latest":"%s"}' "${now}" "$latest" > "${UPDATE_CACHE}"`;
-      const child = spawn("/bin/sh", ["-c", cmd], {
-        detached: true,
-        stdio: "ignore",
-      });
-      child.unref();
+      spawn(BUN_BIN, [SELF_PATH, "--check-update"], { detached: true, stdio: "ignore" }).unref();
     } catch {}
   }
-  const latest = cache?.latest;
+  const latest = /^\d+\.\d+\.\d+$/.test(cache?.latest || "") ? cache.latest : null;
   return { latest, hasUpdate: !!latest && cmpVer(latest, VERSION) > 0 };
 }
 
@@ -822,9 +947,10 @@ function renderBatteryImage(dark, items) {
 function isDarkMode() {
   try {
     return (
-      execSync("defaults read -g AppleInterfaceStyle 2>/dev/null", {
+      execFileSync("/usr/bin/defaults", ["read", "-g", "AppleInterfaceStyle"], {
         encoding: "utf8",
         timeout: 3000,
+        stdio: ["ignore", "pipe", "ignore"],
       }).trim() === "Dark"
     );
   } catch {
@@ -880,7 +1006,7 @@ const fmtTok = (n) => {
 // ── 1. Claude Code: active 5-hour block ────────────────────────
 function getClaude() {
   try {
-    const raw = execSync(`${CCUSAGE} blocks --active --json`, {
+    const raw = execFileSync(CCUSAGE, ["blocks", "--active", "--json"], {
       encoding: "utf8",
       timeout: 20000,
       stdio: ["ignore", "pipe", "ignore"],
@@ -924,7 +1050,7 @@ function getClaudeModels() {
   try {
     const d = new Date();
     const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
-    const raw = execSync(`${CCUSAGE} daily --breakdown --json --since ${ymd}`, {
+    const raw = execFileSync(CCUSAGE, ["daily", "--breakdown", "--json", "--since", ymd], {
       encoding: "utf8",
       timeout: 20000,
       stdio: ["ignore", "pipe", "ignore"],
@@ -977,8 +1103,9 @@ function readClaudeToken() {
   if (existsSync(`${CLAUDE_STATE_DIR}/.no-live`)) return null;
   try {
     if (process.platform !== "darwin") throw new Error("no keychain");
-    const raw = execSync(
-      'security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null',
+    const raw = execFileSync(
+      "/usr/bin/security",
+      ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
       { encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] },
     ).trim();
     const o = JSON.parse(raw)?.claudeAiOauth;
@@ -1007,8 +1134,9 @@ function fetchClaudeUsageLive() {
   let out;
   try {
     // Authorization header passed via stdin (-H @-) — keeps the token out of `ps` output
-    out = execSync(
-      `/usr/bin/curl -sS --max-time 5 -w "\\n%{http_code}" -H @- -H "anthropic-beta: oauth-2025-04-20" https://api.anthropic.com/api/oauth/usage`,
+    out = execFileSync(
+      "/usr/bin/curl",
+      ["-sS", "--max-time", "5", "-w", "\\n%{http_code}", "-H", "@-", "-H", "anthropic-beta: oauth-2025-04-20", "https://api.anthropic.com/api/oauth/usage"],
       {
         encoding: "utf8",
         timeout: 8000,
@@ -1143,8 +1271,11 @@ function fetchCodexUsageLive() {
   if (!c) return null;
   try {
     // Authorization via stdin (-H @-) — keeps the token out of `ps` (same pattern as Claude)
-    const raw = execSync(
-      `/usr/bin/curl -fsS --max-time 5 -H @- -H "ChatGPT-Account-Id: ${c.account}" -H "User-Agent: codex-cli" https://chatgpt.com/backend-api/wham/usage`,
+    // account_id comes from auth.json; only a plain id is sent as a header value
+    const acct = /^[A-Za-z0-9_-]{1,128}$/.test(c.account) ? c.account : "";
+    const raw = execFileSync(
+      "/usr/bin/curl",
+      ["-fsS", "--max-time", "5", "-H", "@-", ...(acct ? ["-H", `ChatGPT-Account-Id: ${acct}`] : []), "-H", "User-Agent: codex-cli", "https://chatgpt.com/backend-api/wham/usage"],
       {
         encoding: "utf8",
         timeout: 8000,
@@ -1285,7 +1416,7 @@ function getGemini() {
   if (!mtime) {
     // 첫 실행: 동기 1회. 실패하면 Gemini 없음 처리
     run(() => {
-      const txt = execSync(`${agy} -p "/usage"`, { encoding: "utf8", timeout: 40000, stdio: ["ignore", "pipe", "ignore"] });
+      const txt = execFileSync(agy, ["-p", "/usage"], { encoding: "utf8", timeout: 40000, stdio: ["ignore", "pipe", "ignore"] });
       if (parseGeminiUsage(txt)) { writeFileSync(GEMINI_CACHE, txt); mtime = now; }
     });
   } else if (now - mtime > GEMINI_TTL) {
@@ -1294,8 +1425,9 @@ function getGemini() {
       const t = readFileSync(GEMINI_CACHE, "utf8");
       writeFileSync(GEMINI_CACHE, t);
       const tmp = `${GEMINI_CACHE}.tmp`;
-      const sh = `${agy} -p "/usage" > '${tmp}' 2>/dev/null && grep -q 'Gemini Models' '${tmp}' && mv '${tmp}' '${GEMINI_CACHE}'; rm -f '${tmp}'`;
-      spawn("/bin/sh", ["-c", sh], { detached: true, stdio: "ignore" }).unref();
+      // values go in as positional args ($1..$3), never spliced into the script text
+      const sh = `"$1" -p /usage > "$2" 2>/dev/null && grep -q 'Gemini Models' "$2" && mv "$2" "$3"; rm -f "$2"`;
+      spawn("/bin/sh", ["-c", sh, "sh", agy, tmp, GEMINI_CACHE], { detached: true, stdio: "ignore" }).unref();
     });
   }
   try {
@@ -1338,15 +1470,19 @@ function battRowsToImage(rows) {
 // ── Terminal output modes (Linux/Chromebook & terminal fans): --cli · --statusline · --tmux · --json ──
 if (process.argv.includes("--serve")) {
   const port = Number(process.env.CCB_PORT || 41414);
+  // Loopback only by default; another interface needs an explicit --host=ADDR (e.g. --host=0.0.0.0)
+  const hostArg = process.argv.find((a) => a.startsWith("--host="));
+  const hostname = hostArg ? hostArg.slice("--host=".length) : "127.0.0.1";
   Bun.serve({
     port,
+    hostname,
     async fetch() {
-      const proc = Bun.spawn(["bun", process.argv[1], "--html"], { env: process.env });
+      const proc = Bun.spawn([process.execPath, process.argv[1], "--html"], { env: process.env });
       const html = await new Response(proc.stdout).text();
       return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
     },
   });
-  console.log(`Claude Codex Battery window: http://localhost:${port}`);
+  console.log(`Claude Codex Battery window: http://${hostname.includes(":") ? `[${hostname}]` : hostname}:${port}`);
   console.log(`Chrome → open the URL → ⋮ menu → Cast/Save → "Install as app" (or Create shortcut, open as window)`);
   await new Promise(() => {}); // keep serving
 } else {
@@ -1661,13 +1797,15 @@ if (!hasClaude && !hasCodex && !gemini) {
 
 // Highlighted one-click update when a new version exists; manual update row always shown
 const upd = getUpdateInfo();
+// Runs this plugin's own verified updater with bun (the old .ccb-update.sh may be outdated)
+const UPDATE_ACTION = `bash="${BUN_BIN}" param1="${SELF_PATH}" param2=--self-update terminal=false refresh=true`;
 if (upd.hasUpdate) {
   out.push(
-    `🆕 ${tf("v{0} 업데이트 (현재 v{1})", "Update to v{0} (current v{1})", upd.latest, VERSION)} | bash="${SELF_DIR}/.ccb-update.sh" terminal=false refresh=true color=#28963f`,
+    `🆕 ${tf("v{0} 업데이트 (현재 v{1})", "Update to v{0} (current v{1})", upd.latest, VERSION)} | ${UPDATE_ACTION} color=#28963f`,
   );
 } else {
   out.push(
-    `⬆️ ${tf("지금 업데이트 — GitHub 최신으로 교체 (현재 v{0})", "Update now — replace with latest from GitHub (current v{0})", VERSION)} | bash="${SELF_DIR}/.ccb-update.sh" terminal=false refresh=true`,
+    `⬆️ ${tf("지금 업데이트 — GitHub 최신 릴리스로 교체 (현재 v{0})", "Update now — replace with the latest GitHub release (current v{0})", VERSION)} | ${UPDATE_ACTION}`,
   );
 }
 out.push(`🔄 ${L("지금 새로고침", "Refresh now")} | refresh=true`);

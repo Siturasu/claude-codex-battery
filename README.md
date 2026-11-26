@@ -49,7 +49,17 @@ bash install.sh
 
 메뉴바 아이콘을 눌러 표시 항목과 크기를 변경합니다. 2분마다 갱신하며 Codex 사용량은 최근 로컬 세션 기준입니다. 소진된 Codex 데이터가 오래되면 백그라운드 CLI 호출로 갱신을 시도합니다.
 
-업데이트는 메뉴의 **업데이트**를 누르거나 최신 ZIP을 받아 `bash install.sh`를 다시 실행합니다.
+업데이트는 메뉴의 **업데이트**를 누르거나 최신 ZIP을 받아 `bash install.sh`를 다시 실행합니다. 메뉴 업데이트(1.7.0부터)는 GitHub 최신 릴리스의 ZIP을 받아 같은 릴리스의 `SHA256SUMS.txt`와 해시가 맞을 때만 교체하고, 맞지 않으면 기존 파일을 그대로 둡니다.
+
+ZIP을 직접 받았다면 같은 릴리스의 `SHA256SUMS.txt`를 같은 폴더에 받아 확인할 수 있습니다.
+
+```bash
+cd ~/Downloads && shasum -a 256 -c SHA256SUMS.txt
+```
+
+브라우저 창 모드(`bun claude-codex-usage.2m.js --serve`)는 `127.0.0.1:41414`에서만 열립니다. 다른 기기에서 열어야 하면 `--host=0.0.0.0`을 붙입니다. 같은 네트워크의 누구나 사용률을 볼 수 있게 되니 필요할 때만 씁니다.
+
+릴리스는 `VERSION`과 스크립트의 `VERSION`을 올려 커밋한 뒤 `bash release.sh`로 만들고(태그, ZIP, `SHA256SUMS.txt`), 그 커밋을 main에 push합니다.
 
 ## 커스텀 요소
 
