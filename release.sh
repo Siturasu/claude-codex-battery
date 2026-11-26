@@ -6,6 +6,7 @@
 #   NOTES="..." ./release.sh
 set -euo pipefail
 cd "$(dirname "$0")"
+GH_REPO=Siturasu/claude-codex-battery   # gh would otherwise default to the fork parent
 V=$(tr -d '[:space:]' < VERSION)
 [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "VERSION is not X.Y.Z: $V"; exit 1; }
 grep -q "^const VERSION = \"$V\";" claude-codex-usage.2m.js || { echo "VERSION ($V) differs from claude-codex-usage.2m.js"; exit 1; }
@@ -17,6 +18,6 @@ bash ./package.sh >/dev/null
 (cd dist && shasum -a 256 -c SHA256SUMS.txt)
 git tag -a "v$V" -m "v$V"
 git push origin "refs/tags/v$V"
-gh release create "v$V" dist/claude-codex-battery-macos.zip dist/SHA256SUMS.txt \
+gh release create "v$V" --repo "$GH_REPO" dist/claude-codex-battery-macos.zip dist/SHA256SUMS.txt \
   --verify-tag --title "v$V" --notes "${NOTES:-v$V}"
 echo "released v$V at $(git rev-parse HEAD). Next: push this commit to main."
